@@ -29,7 +29,11 @@
 
   <!-- OCU script: REPLACE with the script URL given in your Cartpanda admin if different -->
   <script src="https://z-br-affstore.staging.mycartpanda.com/js/libs/ocu-external.js"></script>
-
+<script>
+  // put in page HTML
+  window.ocu = new OcuExternal();
+  console.log('OcuExternal created', !!window.ocu);
+</script>
   <script>
     // Initialize OcuExternal after the library has loaded.
     // This retry loop waits until OcuExternal is available so the call won't fail if load timing varies.
