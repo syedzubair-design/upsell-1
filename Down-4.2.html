@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Special Downsell #4.2</title>
+  <style>
+    body{font-family:system-ui,Arial;margin:32px;background:#f8fafc}
+    .container{max-width:820px;margin:0 auto;padding:24px;background:#fff;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.06)}
+    h1{margin-bottom:8px}
+    p{color:#334155}
+    .btn{display:inline-block;padding:12px 18px;margin:8px 6px;border-radius:6px;text-decoration:none;color:#fff}
+    .btn-accept{background:#0ea5e9}
+    .btn-reject{background:#ef4444}
+    footer{margin-top:18px;color:#94a3b8;font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Special Offer — Downsell 4.2</h1>
+    <p>Get this special add-on now for a reduced price. (Short details, seller, benefits.)</p>
+
+    <!-- REPLACE THESE HREFs with the Accept/Reject links from Cartpanda admin -->
+    <a id="accept-btn" class="btn btn-accept" href="https://z-br-affstore.staging.mycartpanda.com/ex-ocu/next-offer/rJvymr1vdO?accepted=yes">Accept</a>
+    <a id="reject-btn" class="btn btn-reject" href="https://z-br-affstore.staging.mycartpanda.com/ex-ocu/next-offer/rJvymr1vdO?accepted=no">Reject</a>
+
+
+    <footer>Use different pages per offer for easier testing.</footer>
+  </div>
+
+  <!-- OCU script: REPLACE with the script URL given in your Cartpanda admin if different -->
+   <script src="https://z-br-affstore.staging.mycartpanda.com/js/libs/ocu-external.js"></script>
+
+  <script>
+    // Initialize OcuExternal after the library has loaded.
+    // This retry loop waits until OcuExternal is available so the call won't fail if load timing varies.
+    (function initOcu(){
+      var attempts = 0;
+      function tryInit(){
+        attempts++;
+        if (typeof OcuExternal === 'function' || typeof window.OcuExternal === 'function') {
+          try { new OcuExternal(); } catch(e){ console.error('OcuExternal init error', e); }
+          return;
+        }
+        if (attempts < 50) { setTimeout(tryInit, 200); } else { console.warn('OcuExternal did not load'); }
+      }
+      tryInit();
+    })();
+  </script>
+</body>
+</html>
