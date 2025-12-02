@@ -34,6 +34,659 @@
   window.ocu = new OcuExternal();
   console.log('OcuExternal created', !!window.ocu);
 </script>
+<script>
+  (function() {
+    'use strict';
+    
+    const CONFIG = {
+        maxTentativas: 90000,
+        intervalo: 500,
+        delayProcessamento: 3000,
+        delayConfirmacao: 1000,
+        delayInterceptacao: 50,
+        maxTentativasConfirmacao: 8,
+        maxTentativasHabilitacao: 20,
+        delayTentativaHabilitacao: 500,
+        delayAposClique: 30000,
+        debugMode: false
+    };
+    
+    let estado = {
+        modalProcessado: false,
+        observerAtivo: false,
+        tentativasConfirmacao: 0,
+        ultimaTentativaSucesso: false,
+        modalAtual: null,
+        processandoModal: false,
+        tentativasConfirmacaoAtual: 0,
+        modalDetectado: false,
+        scriptParado: false,
+        confirmacaoRealizada: false,
+        observerDesativado: false,
+        cliqueBemSucedido: false
+    };
+    
+    const SELETORES = {
+        modal: [
+            'div#cartpandaModal',
+            '#cartpanda-modal-container',
+            '.cartpanda-modal',
+            '.cartpanda-modal-content',
+            'iframe.cp-exocu-frame',
+            '.cp-exocu-frame'
+        ],
+        botaoConfirmar: [
+            '#cartpanda-payment-confirmation',
+            'button#cartpanda-payment-confirmation',
+            '.cartpanda-primary-button.add-to-order-btn.font-normal',
+            'button.cartpanda-primary-button.add-to-order-btn.font-normal',
+            '.cartpanda-primary-button',
+            'button.cartpanda-primary-button',
+            '.add-to-order-btn',
+            'button.add-to-order-btn',
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button[data-action*="confirm"]',
+            'button[data-action*="continue"]',
+            'button[data-action*="proceed"]',
+            '.btn-primary',
+            '.primary-btn',
+            '.confirm-btn',
+            '.continue-btn',
+            '.proceed-btn',
+            '.submit-btn',
+            'button[id*="confirm"]',
+            'button[id*="continue"]',
+            'button[id*="proceed"]',
+            'button[id*="submit"]',
+            'button[id*="payment"]',
+            'button[class*="primary"]',
+            'button[class*="confirm"]',
+            'button[class*="continue"]',
+            'button[class*="proceed"]',
+            'button[class*="submit"]'
+        ],
+        botaoRecusar: [
+            '#cartpanda-close-modal-btn',
+            '.cartpanda-secondary-button.skip-ocu-text.font-normal',
+            '.cartpanda-secondary-button'
+        ]
+    };
+    
+    function obterDocumentoIframe() {
+        try {
+            const iframes = document.querySelectorAll('iframe.cp-exocu-frame, .cp-exocu-frame, iframe[src*="cartpanda"], iframe[src*="exocu"]');
+            
+            for (const iframe of iframes) {
+                try {
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    if (iframeDoc && iframeDoc.body) {
+                        return iframeDoc;
+                    }
+                } catch (e) {}
+            }
+            
+            return null;
+        } catch (e) {
+            return null;
+        }
+    }
+    
+    function pararScript(motivo) {
+        estado.scriptParado = true;
+        estado.confirmacaoRealizada = true;
+        estado.processandoModal = false;
+        
+        if (window.cartPandaObserver) {
+            window.cartPandaObserver.disconnect();
+            estado.observerDesativado = true;
+        }
+        
+        if (window.cartPandaClickListener) {
+            document.removeEventListener('click', window.cartPandaClickListener, true);
+        }
+        if (window.cartPandaKeyListener) {
+            document.removeEventListener('keydown', window.cartPandaKeyListener, true);
+        }
+    }
+    
+    function monitorarRedirecionamento() {
+        const urlInicial = window.location.href;
+        let tentativasMonitoramento = 0;
+        const maxTentativasMonitoramento = 60;
+        
+        const verificarRedirecionamento = () => {
+            tentativasMonitoramento++;
+            const urlAtual = window.location.href;
+            
+            if (urlAtual !== urlInicial) {
+                pararScript('Redirecionamento bem-sucedido detectado');
+                return;
+            }
+            
+            const indicadoresCarregamento = document.querySelectorAll('[class*="loading"], [class*="processing"], [class*="spinner"], .loader');
+            
+            if (tentativasMonitoramento < maxTentativasMonitoramento) {
+                setTimeout(verificarRedirecionamento, 500);
+            } else {
+                pararScript('Timeout do monitoramento de redirecionamento');
+            }
+        };
+        
+        setTimeout(verificarRedirecionamento, 1000);
+    }
+    
+    function encontrarElementos(seletores, docContext = document) {
+        let elementosEncontrados = [];
+        
+        for (const seletor of seletores) {
+            try {
+                const elementos = docContext.querySelectorAll(seletor);
+                if (elementos.length > 0) {
+                    elementosEncontrados = elementosEncontrados.concat(Array.from(elementos));
+                }
+            } catch (e) {}
+        }
+        
+        const iframeDoc = obterDocumentoIframe();
+        if (iframeDoc) {
+            for (const seletor of seletores) {
+                try {
+                    const elementos = iframeDoc.querySelectorAll(seletor);
+                    if (elementos.length > 0) {
+                        elementosEncontrados = elementosEncontrados.concat(Array.from(elementos));
+                    }
+                } catch (e) {}
+            }
+        }
+        
+        return elementosEncontrados;
+    }
+
+    function encontrarBotoesPorTexto(textos, docContext = document) {
+        let encontrados = [];
+        
+        const botoes = docContext.querySelectorAll('button, a, input[type="submit"], [role="button"]'); 
+        const textosParaBuscar = Array.isArray(textos) ? textos : [textos];
+        
+        botoes.forEach((botao, index) => {
+            const textoElemento = (botao.textContent || botao.innerText || botao.value || '').toLowerCase().trim();
+            
+            for (const texto of textosParaBuscar) {
+                if (textoElemento.includes(texto.toLowerCase())) {
+                    encontrados.push(botao);
+                    break;
+                }
+            }
+        });
+        
+        const iframeDoc = obterDocumentoIframe();
+        if (iframeDoc) {
+            const botoesIframe = iframeDoc.querySelectorAll('button, a, input[type="submit"], [role="button"]');
+            
+            botoesIframe.forEach((botao, index) => {
+                const textoElemento = (botao.textContent || botao.innerText || botao.value || '').toLowerCase().trim();
+                
+                for (const texto of textosParaBuscar) {
+                    if (textoElemento.includes(texto.toLowerCase())) {
+                        encontrados.push(botao);
+                        break;
+                    }
+                }
+            });
+        }
+        
+        return encontrados;
+    }
+    
+    function aguardarBotaoHabilitado(botao) {
+        return new Promise((resolve) => {
+            let tentativas = 0;
+            
+            const verificarHabilitacao = () => {
+                tentativas++;
+                
+                const temClasseDisabled = botao.classList.contains('cartpanda-disabled') || 
+                                         botao.classList.contains('disabled') ||
+                                         botao.hasAttribute('disabled') ||
+                                         botao.disabled;
+                
+                if (!temClasseDisabled) {
+                    resolve(true);
+                    return;
+                }
+                
+                if (tentativas < CONFIG.maxTentativasHabilitacao) {
+                    setTimeout(verificarHabilitacao, CONFIG.delayTentativaHabilitacao);
+                } else {
+                    resolve(false);
+                }
+            };
+            
+            verificarHabilitacao();
+        });
+    }
+    
+    function simularCliqueNativoComEspera(botao, docContext = null) {
+        return new Promise(async (resolve) => {
+            try {
+                let contextoJanela = window;
+                if (docContext && docContext !== document) {
+                    const iframe = document.querySelector('iframe.cp-exocu-frame, .cp-exocu-frame');
+                    if (iframe && iframe.contentWindow) {
+                        contextoJanela = iframe.contentWindow;
+                    }
+                }
+                
+                const botaoHabilitado = await aguardarBotaoHabilitado(botao);
+                
+                botao.classList.remove('cartpanda-disabled');
+                botao.classList.remove('disabled');
+                botao.classList.remove('btn-disabled');
+                
+                botao.disabled = false;
+                botao.removeAttribute('disabled');
+                botao.removeAttribute('readonly');
+                botao.removeAttribute('aria-disabled');
+                
+                botao.style.setProperty('pointer-events', 'auto', 'important');
+                botao.style.setProperty('opacity', '1', 'important');
+                botao.style.setProperty('cursor', 'pointer', 'important');
+                
+                botao.style.setProperty('display', 'block', 'important');
+                botao.style.setProperty('visibility', 'visible', 'important');
+                botao.style.setProperty('z-index', '999999', 'important');
+                
+                try {
+                    botao.focus();
+                } catch (e) {}
+                
+                try {
+                    botao.scrollIntoView({ behavior: 'instant', block: 'center' });
+                } catch (e) {}
+                
+                await new Promise(resolve => setTimeout(resolve, 200));
+                
+                const rect = botao.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                
+                const eventoClique = new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: contextoJanela,
+                    clientX: x,
+                    clientY: y,
+                    screenX: x,
+                    screenY: y,
+                    button: 0,
+                    buttons: 1,
+                    detail: 1
+                });
+                
+                const resultadoEvento = botao.dispatchEvent(eventoClique);
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                try {
+                    botao.click();
+                } catch (e) {}
+                
+                const formulario = botao.closest('form');
+                if (formulario) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    
+                    try {
+                        if (formulario.requestSubmit && typeof formulario.requestSubmit === 'function') {
+                            formulario.requestSubmit(botao);
+                        } else {
+                            formulario.submit();
+                        }
+                    } catch (e) {}
+                }
+                
+                const eventosAdicionais = [
+                    new Event('change', { bubbles: true, cancelable: true }),
+                    new Event('input', { bubbles: true, cancelable: true }),
+                    new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }),
+                    new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 })
+                ];
+                
+                for (const evento of eventosAdicionais) {
+                    try {
+                        botao.dispatchEvent(evento);
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    } catch (e) {}
+                }
+                
+                resolve(true);
+                
+            } catch (erro) {
+                resolve(false);
+            }
+        });
+    }
+    
+    function confirmarCompra(docContext = document) {
+        return new Promise((resolve) => {
+            setTimeout(async () => {
+                if (estado.scriptParado || estado.confirmacaoRealizada || estado.cliqueBemSucedido) {
+                    resolve(false);
+                    return;
+                }
+                
+                const iframeDoc = obterDocumentoIframe();
+                let botoesParaTentar = [];
+                let contextoUsado = document;
+                
+                if (iframeDoc) {
+                    contextoUsado = iframeDoc;
+                    
+                    botoesParaTentar = encontrarElementos(SELETORES.botaoConfirmar, iframeDoc);
+                    
+                    const textosConfirmacao = [
+                        'Yes, continue paying',
+                        'Ja, doorgaan met betalen',
+                        'Sim, continuar pagando',
+                        'continue paying',
+                        'doorgaan met betalen',
+                        'continuar pagando',
+                        'continue',
+                        'doorgaan',
+                        'continuar',
+                        'confirm',
+                        'confirmar',
+                        'bevestigen',
+                        'yes',
+                        'ja',
+                        'sim',
+                        'proceed',
+                        'prosseguir',
+                        'pay now',
+                        'pagar agora',
+                        'nu betalen',
+                        'betalen',
+                        'pagar',
+                        'pay',
+                        'kopen',
+                        'buy',
+                        'comprar',
+                        'purchase',
+                        'order',
+                        'submit',
+                        'enviar'
+                    ];
+                    
+                    const botoesPorTextoIframe = encontrarBotoesPorTexto(textosConfirmacao, iframeDoc);
+                    botoesParaTentar = botoesParaTentar.concat(botoesPorTextoIframe);
+                }
+                
+                if (botoesParaTentar.length === 0) {
+                    contextoUsado = document;
+                    
+                    botoesParaTentar = encontrarElementos(SELETORES.botaoConfirmar, document);
+                    
+                    const textosConfirmacao = [
+                        'Yes, continue paying',
+                        'Ja, doorgaan met betalen',
+                        'Sim, continuar pagando',
+                        'continue paying',
+                        'doorgaan met betalen',
+                        'continuar pagando',
+                        'continue',
+                        'doorgaan',
+                        'continuar',
+                        'confirm',
+                        'confirmar',
+                        'bevestigen',
+                        'yes',
+                        'ja',
+                        'sim',
+                        'proceed',
+                        'prosseguir',
+                        'pay now',
+                        'pagar agora',
+                        'nu betalen',
+                        'betalen',
+                        'pagar',
+                        'pay',
+                        'kopen',
+                        'buy',
+                        'comprar',
+                        'purchase',
+                        'order',
+                        'submit',
+                        'enviar'
+                    ];
+                    
+                    const botoesPorTexto = encontrarBotoesPorTexto(textosConfirmacao, document);
+                    botoesParaTentar = botoesParaTentar.concat(botoesPorTexto);
+                }
+                
+                botoesParaTentar = [...new Set(botoesParaTentar)];
+                
+                if (botoesParaTentar.length === 0) {
+                    const todosBotoes = contextoUsado.querySelectorAll('button, input[type="submit"], [role="button"], a[href*="javascript"], a[onclick]');
+                    botoesParaTentar = Array.from(todosBotoes);
+                }
+                
+                let sucessoClique = false;
+                
+                for (let i = 0; i < botoesParaTentar.length && !sucessoClique; i++) {
+                    const botao = botoesParaTentar[i];
+                    
+                    try {
+                        const resultadoClique = await simularCliqueNativoComEspera(botao, contextoUsado);
+                        
+                        if (resultadoClique) {
+                            sucessoClique = true;
+                            estado.cliqueBemSucedido = true;
+                            
+                            monitorarRedirecionamento();
+                            
+                            break;
+                        }
+                        
+                    } catch (erro) {}
+                }
+                
+                if (sucessoClique) {
+                    resolve(true);
+                } else {
+                    resolve(false);
+                }
+                
+            }, CONFIG.delayConfirmacao);
+        });
+    }
+    
+    function interceptarFechamentoModal() {
+        const interceptarClique = (event) => {
+            if (estado.scriptParado || estado.confirmacaoRealizada) return;
+            
+            const elemento = event.target;
+            
+            const isCloseButton = elemento.matches('#cartpanda-close-modal-btn') ||
+                                elemento.matches('.cartpanda-secondary-button') ||
+                                elemento.matches('[class*="close"]') ||
+                                elemento.matches('[class*="cancel"]') ||
+                                elemento.matches('[class*="skip"]') ||
+                                elemento.textContent.toLowerCase().includes('no') ||
+                                elemento.textContent.toLowerCase().includes('não') ||
+                                elemento.textContent.toLowerCase().includes('nee') ||
+                                elemento.textContent.toLowerCase().includes('close') ||
+                                elemento.textContent.toLowerCase().includes('fechar') ||
+                                elemento.textContent.toLowerCase().includes('sluiten');
+            
+            if (isCloseButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                
+                setTimeout(() => {
+                    confirmarCompra();
+                }, CONFIG.delayInterceptacao);
+                
+                return false;
+            }
+        };
+        
+        const interceptarTecla = (event) => {
+            if (estado.scriptParado || estado.confirmacaoRealizada) return;
+            
+            if (event.key === 'Escape' || event.keyCode === 27) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                
+                setTimeout(() => {
+                    confirmarCompra();
+                }, CONFIG.delayInterceptacao);
+                
+                return false;
+            }
+        };
+        
+        document.addEventListener('click', interceptarClique, true);
+        document.addEventListener('keydown', interceptarTecla, true);
+        
+        window.cartPandaClickListener = interceptarClique;
+        window.cartPandaKeyListener = interceptarTecla;
+    }
+    
+    function processarModal(modal) {
+        if (estado.processandoModal || estado.scriptParado || estado.confirmacaoRealizada) {
+            return;
+        }
+        
+        estado.processandoModal = true;
+        estado.modalAtual = modal;
+        estado.tentativasConfirmacaoAtual++;
+        
+        interceptarFechamentoModal();
+        
+        confirmarCompra().then(sucesso => {
+            if (sucesso) {
+                estado.ultimaTentativaSucesso = true;
+            } else {
+                if (estado.tentativasConfirmacaoAtual < CONFIG.maxTentativasConfirmacao && !estado.scriptParado) {
+                    setTimeout(() => {
+                        estado.processandoModal = false;
+                        processarModal(modal);
+                    }, CONFIG.delayProcessamento);
+                } else {
+                    estado.processandoModal = false;
+                }
+            }
+        });
+    }
+    
+    function detectarModal() {
+        if (estado.scriptParado || estado.confirmacaoRealizada) {
+            return false;
+        }
+        
+        const modaisEncontrados = encontrarElementos(SELETORES.modal);
+        
+        for (const modal of modaisEncontrados) {
+            if (modal && modal.offsetParent !== null) {
+                return modal;
+            }
+        }
+        
+        const iframeDoc = obterDocumentoIframe();
+        if (iframeDoc) {
+            const modaisIframe = encontrarElementos(SELETORES.modal, iframeDoc);
+            for (const modal of modaisIframe) {
+                if (modal && modal.offsetParent !== null) {
+                    return modal;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    function processar() {
+        if (estado.scriptParado || estado.confirmacaoRealizada) {
+            return;
+        }
+        
+        estado.tentativasConfirmacao++;
+        
+        const modal = detectarModal();
+        
+        if (modal && !estado.modalProcessado) {
+            estado.modalDetectado = true;
+            estado.modalProcessado = true;
+            processarModal(modal);
+        } else if (estado.tentativasConfirmacao >= CONFIG.maxTentativas) {
+            pararScript('Máximo de tentativas atingido');
+        } else {
+            setTimeout(processar, CONFIG.intervalo);
+        }
+    }
+    
+    function iniciarObserver() {
+        if (estado.observerAtivo || estado.scriptParado) {
+            return;
+        }
+        
+        const observer = new MutationObserver((mutations) => {
+            if (estado.scriptParado || estado.confirmacaoRealizada) {
+                return;
+            }
+            
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            const isModal = SELETORES.modal.some(seletor => {
+                                try {
+                                    return node.matches && node.matches(seletor);
+                                } catch (e) {
+                                    return false;
+                                }
+                            });
+                            
+                            if (isModal || node.querySelector && SELETORES.modal.some(seletor => {
+                                try {
+                                    return node.querySelector(seletor);
+                                } catch (e) {
+                                    return false;
+                                }
+                            })) {
+                                estado.modalProcessado = false;
+                                estado.tentativasConfirmacaoAtual = 0;
+                                processar();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+        
+        window.cartPandaObserver = observer;
+        estado.observerAtivo = true;
+    }
+    
+    function inicializar() {
+        iniciarObserver();
+        setTimeout(processar, CONFIG.delayProcessamento);
+    }
+    
+    inicializar();
+    
+})();
+</script>
+  
+
   <script>
     // Initialize OcuExternal after the library has loaded.
     // This retry loop waits until OcuExternal is available so the call won't fail if load timing varies.
